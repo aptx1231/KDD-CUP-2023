@@ -1,0 +1,9 @@
+/.vscode
+/.idea
+/output
+/data
+/ckpt
+/log
+catboost_info/
+__pycache__/
+*.zip
