@@ -54,7 +54,7 @@ from torch.utils.data import Dataset
 import argparse
 from utils import set_random_seed, get_logger, ensure_dir, str2bool, str2float
 from data import NNDataset, NNDatasetV2
-from model import MatchModel, BaseModel, MatchModelV2
+from model import MatchModel, BaseModel, MatchModelV2, BinaryModel, DIN, DIEN
 
 """
 相比于trainDeeep.py，加入一些手动聚合的序列特征，例如历史序列的平均价格，历史序列的不同类别数之类的
@@ -70,72 +70,120 @@ parser = argparse.ArgumentParser()
 #                         default='xDeepFM', help='the name of model')
 parser.add_argument('--exp_id', type=str, default=None, help='id of experiment')
 parser.add_argument('--seed', type=int, default=2023, help='random seed')
+parser.add_argument('--Fold', type=int, default=0, help='Fold')
 parser.add_argument('--device', type=int, default=0, help='device')
+parser.add_argument('--task', type=str, default='task1', help='task1 / task2')
 
 parser.add_argument('--len_candidate_set', type=int, default=10, help='len_candidate_set')
 parser.add_argument('--emb_dim', type=int, default=16, help='emb_dim')
 parser.add_argument('--hid_dim', type=int, default=256, help='hid_dim')
 parser.add_argument('--layers', type=int, default=4, help='layers')
+parser.add_argument('--heads', type=int, default=8, help='heads')
 parser.add_argument('--bidirectional', type=str2bool, default=False, help='bidirectional')
 parser.add_argument('--seq_emb_factor', type=int, default=4, help='seq_emb_factor')
+parser.add_argument('--pro_emb_factor', type=int, default=2, help='pro_emb_factor')
+parser.add_argument('--intra', type=str, default='intra', help='intra attn: intra / intra2 / intra3')
+parser.add_argument('--seq_model', type=str, default='LSTM', help='seq_model LSTM/transformer')
+parser.add_argument('--recall', type=str, default='window', help='next / window')
+parser.add_argument('--div', type=int, default=1, help='div of ProductV2')
 
 parser.add_argument('--dropout', type=float, default=0.1, help='dropout')
 parser.add_argument('--batch_size', type=int, default=1024, help='batch_size')
 parser.add_argument('--epochs', type=int, default=100, help='epochs')
 parser.add_argument('--lr', type=float, default=0.002, help='lr')
+parser.add_argument('--weight_decay', type=float, default=0.00001, help='weight_decay')
 parser.add_argument('--lr_patience', type=int, default=5, help='lr_patience')
 parser.add_argument('--dense_norm', type=str2bool, default=True, help='dense_norm')
+parser.add_argument('--attn_match', type=str2bool, default=True, help='attn_match')
 
 parser.add_argument('--train', type=str2bool, default=True, help='train')
 parser.add_argument('--load_init', type=str2bool, default=False, help='load_init')
 parser.add_argument('--load_epoch', nargs='+', type=int, default=None, help='load_epoch')
 parser.add_argument('--load_exp_id', nargs='+', type=int, default=None, help='load_exp_id')
-args = parser.parse_args()
 
+parser.add_argument('--add_title', type=str2bool, default=True, help='add_title')
+parser.add_argument('--add_desc', type=str2bool, default=True, help='add_desc')
+parser.add_argument('--add_w2v', type=str2bool, default=True, help='add_w2v')
+parser.add_argument('--add_pemb', type=str2bool, default=False, help='add_pemb')
+parser.add_argument('--grad_title', type=str2bool, default=False, help='grad_title')
+parser.add_argument('--grad_desc', type=str2bool, default=False, help='grad_desc')
+parser.add_argument('--grad_w2v', type=str2bool, default=False, help='grad_w2v')
+parser.add_argument('--grad_pemb', type=str2bool, default=False, help='grad_pemb')
+parser.add_argument('--pca', type=str2bool, default=False, help='pca')
+parser.add_argument('--pca_dim', type=int, default=64, help='pca_dim')
+parser.add_argument('--feature', type=str, default='v1', help='feature v1 v2 v3')
+parser.add_argument('--add_mode', type=str2bool, default=True, help='add_mode in feature v3')
+parser.add_argument('--model_name', type=str, default='binarymodel', help='model_name')
+args = parser.parse_args()
 
 emb_dim = args.emb_dim
 dense_bins = 10
 hid_dim = args.hid_dim
 dropout = args.dropout
 layers = args.layers
+heads = args.heads
 bidirectional = args.bidirectional
 seq_emb_factor = args.seq_emb_factor  # 人工序列特征的嵌入是emb_dim的几倍
+pro_emb_factor = args.pro_emb_factor
+seq_model = args.seq_model
+task = args.task
+recall = args.recall
+div = args.div
+add_mode = args.add_mode
+model_name = args.model_name
 
 batch_size = args.batch_size
 epochs = args.epochs
 len_candidate_set = args.len_candidate_set
+Fold = args.Fold
 device = torch.device('cuda:{}'.format(args.device))
 dense_norm = args.dense_norm
 num_workers = 0
+intra = args.intra
 
+feature = args.feature
 train = args.train
-load_init = True
+load_init = args.load_init
 load_epoch = args.load_epoch
 load_exp_id = args.load_exp_id
 
+add_title = args.add_title
+add_desc = args.add_desc
+add_w2v = args.add_w2v
+add_pemb = args.add_pemb
+grad_title = args.grad_title
+grad_desc = args.grad_desc
+grad_w2v = args.grad_w2v
+grad_pemb = args.grad_pemb
+pca = args.pca
+pca_dim = args.pca_dim
+
 load_exp_id = [
-    # 93545,
-    43234,
-    # 84653,
-    # 29020,
+28405,
+23616,
+20929,
+84696,
+16959,
 ]
 load_epoch = [
-    # 52,
-    51,
-    # 53,
-    # 50
+-1,
+-1,
+-1,
+-1,
+-1
 ]
 load_Fold = [
-    # 0,
+    0,
     1,
-    # 2,
-    # 3
+    2,
+    3,
+    4,
 ]
 
 # TODO: 调整batch-size， 调整hidden-size
 # TODO: 跑Fold 4
 learning_rate = args.lr
-weight_decay = 0.00001
+weight_decay = args.weight_decay
 early_stop_lr = 1e-6
 lr_patience = args.lr_patience
 lr_decay_ratio = 0.1
@@ -144,7 +192,7 @@ log_every = 100
 early_stop = True
 patience = 10
 kfold = 5
-attn_match = True 
+attn_match = args.attn_match 
 
 w2v_window = 3
 w2v_min_count = 1
@@ -154,14 +202,14 @@ w2v_vector_size = 128
 seed = args.seed
 set_random_seed(seed)
 
-model_name = 'MatchModelV2withATTMatch'
+model_name = '{}Fold{}'.format(model_name, Fold)
 loc2id = {'DE': 0, 'JP': 1, 'UK': 2, 'ES': 3, 'FR': 4, 'IT': 5}
 
 config = locals()
 
 # 加载必要的数据
 
-exp_id = config.get('exp_id', None)
+exp_id = args.exp_id
 if exp_id is None:
     exp_id = int(random.SystemRandom().random() * 100000)
     config['exp_id'] = exp_id
@@ -170,13 +218,14 @@ logger = get_logger(config)
 logger.info('Exp_id {}'.format(exp_id))
 logger.info(config)
 
-logger.info('load_exp_id = {}'.format(load_exp_id))
-logger.info('load_epoch = {}'.format(load_epoch))
-
 logger.info('read data')
 
-titles_embedding = np.load('./data/titles_embedding.npy')
-descs_embedding = np.load('./data/descs_embedding.npy')
+if not pca:
+    titles_embedding = np.load('./data/titles_embedding.npy')
+    descs_embedding = np.load('./data/descs_embedding.npy')
+else:
+    titles_embedding = np.load('./data/titles_embedding_reduced_{}.npy'.format(pca_dim))
+    descs_embedding = np.load('./data/descs_embedding_reduced_{}.npy'.format(pca_dim))
 logger.info('titles_embedding: {}'.format(titles_embedding.shape))
 logger.info('descs_embedding: {}'.format(descs_embedding.shape))
 
@@ -189,29 +238,61 @@ logger.info('id2product: {}'.format(len(id2product)))
 word2vec_embedding = np.load('./data/word2vec_embedding.npy')
 logger.info('word2vec_embedding: {}'.format(word2vec_embedding.shape))
 
-top200 = pickle.load(open('data/top200_new.pkl', 'rb'))
-
 df_train_encoded = pd.read_csv('data/df_train_encoded.csv')
-df_test_encoded = pd.read_csv('data/df_test_encoded.csv')
-products_encoded = pd.read_csv('./data/products_encoded.csv')
+if task == 'task1':
+    df_test_encoded = pd.read_csv('data/df_test_encoded_phase2.csv')
+elif task == 'task2':
+    df_test_encoded = pd.read_csv('data/df_test_encoded_phase2_onlytask2.csv')
+
+if feature.lower() == 'v1':
+    products_encoded = pd.read_csv('./data/products_encoded.csv')
+    num_features = ['price', 'len_title', 'len_desc']
+elif feature.lower() == 'v2':
+    products_encoded = pd.read_csv('./data/products_encoded_newfeature.csv')
+    num_features = ['price']
+elif feature.lower() == 'v3':
+    products_encoded = pd.read_csv('./data/products_encoded_phase2_V3.csv')
+    num_features = ['price']
+
 logger.info('df_train_encoded: {}'.format(df_train_encoded.shape))
 logger.info('df_test_encoded: {}'.format(df_test_encoded.shape))
 logger.info('products_encoded: {}'.format(products_encoded.shape))
 
-num_features = ['price', 'len_title', 'len_desc']
 if dense_norm:
     logger.info('MinMaxScaler Norm products_num_feas')
     mms = MinMaxScaler(feature_range=(0,1))
     products_encoded[num_features] = mms.fit_transform(products_encoded[num_features])
 for fe in num_features:
-    products_encoded.loc[:, fe] = products_encoded.loc[:, fe].astype('float32')
+    products_encoded[fe] = products_encoded[fe].astype('float32')
+    assert products_encoded[fe].dtypes == 'float32'
 
 logger.info('Load Hand-made Seq Features')
-df_train_seqs_feas_all = pd.read_csv('data/df_train_seqs_feas_all.csv')  # 29维特征
-df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all.csv')
+
+if feature.lower() == 'v1':
+    df_train_seqs_feas_all = pd.read_csv('data/df_train_seqs_feas_all.csv')  # 29维特征
+    if task == 'task1':
+        df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all_phase2.csv')
+    elif task == 'task2':
+        df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all_phase2_onlytask2.csv')
+    dense_bins = 10
+elif feature.lower() == 'v2':
+    df_train_seqs_feas_all = pd.read_csv('data/df_train_seqs_feas_all_newfeature.csv')  # 24维特征
+    if task == 'task1':
+        df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all_newfeature_phase2.csv')
+    elif task == 'task2':
+        df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all_newfeature_phase2_onlytask2.csv')
+    dense_bins = 100
+elif feature.lower() == 'v3':
+    df_train_seqs_feas_all = pd.read_csv('data/df_train_seqs_feas_all_phase2_V3.csv')  # 36维特征
+    if task == 'task1':
+        df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all_phase2_V3.csv')
+    elif task == 'task2':
+        df_test_seqs_feas_all = pd.read_csv('data/df_test_seqs_feas_all_phase2_V3_onlytask2.csv')
+    dense_bins = 100
+
 logger.info('df_train_seqs_feas_all: {}'.format(df_train_seqs_feas_all.shape))
 logger.info('df_test_seqs_feas_all: {}'.format(df_test_seqs_feas_all.shape))
-seqs_cat_feas = [f for f in df_train_seqs_feas_all.columns if 'NUNIQUE' in f or 'COUNT' in f]
+seqs_cat_feas = [f for f in df_train_seqs_feas_all.columns if 'NUNIQUE' in f or 'COUNT' in f or 'encode_' in f]
 seqs_num_feas = [f for f in df_train_seqs_feas_all.columns if f not in seqs_cat_feas]
 logger.info('seqs_cat_feas: {}'.format(seqs_cat_feas))
 logger.info('seqs_num_feas: {}'.format(seqs_num_feas))
@@ -221,9 +302,10 @@ if dense_norm:
     mms = MinMaxScaler(feature_range=(0,1))
     df_train_seqs_feas_all[seqs_num_feas] = mms.fit_transform(df_train_seqs_feas_all[seqs_num_feas])
     df_test_seqs_feas_all[seqs_num_feas] = mms.fit_transform(df_test_seqs_feas_all[seqs_num_feas])
+
 for fe in seqs_num_feas:
-    df_train_seqs_feas_all.loc[:, fe] = df_train_seqs_feas_all.loc[:, fe].astype('float32')
-    df_test_seqs_feas_all.loc[:, fe] = df_test_seqs_feas_all.loc[:, fe].astype('float32')
+    df_train_seqs_feas_all[fe] = df_train_seqs_feas_all[fe].astype('float32')
+    df_test_seqs_feas_all[fe] = df_test_seqs_feas_all[fe].astype('float32')
 
 df_train_seqs_cat_feas = df_train_seqs_feas_all[seqs_cat_feas]
 df_train_seqs_num_feas = df_train_seqs_feas_all[seqs_num_feas]
@@ -236,12 +318,23 @@ logger.info('df_test_seqs_num_feas: {}'.format(df_test_seqs_num_feas.shape))
 
 id_count = products_encoded.shape[0]
 
-train_preds_encoded = pickle.load(open('./data/train_preds_all_encoded_new.pkl', 'rb'))  # (len_train, 100)
-test_preds_encoded = pickle.load(open('./data/test_preds_all_encoded_new.pkl', 'rb'))  # (len_test, 100)
-test_preds = pickle.load(open('./data/test_preds_all.pkl', 'rb'))
-logger.info('train_preds_encoded: {}'.format(len(train_preds_encoded)))
-logger.info('test_preds_encoded: {}'.format(len(test_preds_encoded)))
-logger.info('test_preds: {}'.format(len(test_preds)))
+# train_preds_encoded = pickle.load(open('./data/train_preds_all_encoded_new_phase2.pkl', 'rb'))  # (len_train, 100)
+# test_preds_encoded = pickle.load(open('./data/test_preds_all_encoded_new_phase2.pkl', 'rb'))  # (len_test, 100)
+# test_preds = pickle.load(open('./data/test_preds_phase2.pkl', 'rb'))
+if task == 'task1':
+    train_preds_encoded = pickle.load(open('./data/train_preds_{}_one_phase2_noleak_encoded.pkl'.format(recall), 'rb'))  # (len_train, 100)
+    test_preds_encoded = pickle.load(open('./data/test_preds_{}_one_phase2_encoded.pkl'.format(recall), 'rb'))  # (len_test, 100)
+    logger.info('./data/train_preds_{}_one_phase2_noleak_encoded.pkl'.format(recall))
+    logger.info('train_preds_encoded: {}'.format(len(train_preds_encoded)))
+    logger.info('./data/test_preds_{}_one_phase2_encoded.pkl'.format(recall))
+    logger.info('test_preds_encoded: {}'.format(len(test_preds_encoded)))
+elif task == 'task2':
+    train_preds_encoded = pickle.load(open('./data/train_preds_{}_one_onlytask2_phase2_noleak_encoded.pkl'.format(recall), 'rb'))  # (len_train, 100)
+    test_preds_encoded = pickle.load(open('./data/test_preds_{}_one_onlytask2_phase2_encoded.pkl'.format(recall), 'rb'))  # (len_test, 100)
+    logger.info('./data/train_preds_{}_one_onlytask2_phase2_noleak_encoded.pkl'.format(recall))
+    logger.info('train_preds_encoded: {}'.format(len(train_preds_encoded)))
+    logger.info('./data/test_preds_{}_one_onlytask2_phase2_encoded.pkl'.format(recall))
+    logger.info('test_preds_encoded: {}'.format(len(test_preds_encoded)))
 
 logger.info('Cutting the candidate_set to {}'.format(len_candidate_set))
 cut_train_preds_encoded = [lst[:len_candidate_set] for lst in tqdm(train_preds_encoded, total=len(train_preds_encoded))]
@@ -253,8 +346,12 @@ logger.info('Eval the prev_items')
 df_train_encoded['prev_items'] = df_train_encoded['prev_items'].apply(eval)
 df_test_encoded['prev_items'] = df_test_encoded['prev_items'].apply(eval)
 
-df_test = pd.read_csv('data/sessions_test_task1.csv')
-logger.info('df_test: {}'.format(df_test.shape))
+if task == 'task1':
+    df_test = pd.read_csv('data/phase2/sessions_test_task1.csv')
+    logger.info('df_test Task 1 Phase 2: {}'.format(df_test.shape))
+elif task == 'task2':
+    df_test = pd.read_csv('data/phase2/sessions_test_task2.csv')
+    logger.info('df_test Task 2 Phase 2: {}'.format(df_test.shape))
 
 tmp = pd.concat([df_train_seqs_feas_all[seqs_cat_feas], df_test_seqs_feas_all[seqs_cat_feas]])
 tmp_nunique = (tmp.max() + 1).to_dict()  # 不是nunique，因为这个是计数特征，不是连续的0~n-1
@@ -270,7 +367,7 @@ data_feature['len_locale'] = len(loc2id)
 data_feature['dense_bins'] = dense_bins
 data_feature['id_count'] = id_count
 data_feature['len_features'] = products_encoded.shape[1] - 1
-data_feature['len_emb_features'] = 3
+data_feature['len_emb_features'] = int(add_desc) + int(add_title) + int(add_w2v) + int(add_pemb)
 data_feature['len_candidate_set'] = len_candidate_set
 data_feature['w2v_vector_size'] = w2v_vector_size
 data_feature['sentence_vector_size'] = 384
@@ -375,11 +472,22 @@ for index, exp_id_index in enumerate(load_exp_id):
     fold_index = load_Fold[index]
     model_name_index = 'MatchModelV2withATTMatchFold{}'.format(fold_index)
 
-    load_dir = 'ckpt/{}'.format(exp_id_index)
-    load_path = '{}/{}_{}_{}.pt'.format(load_dir, exp_id_index, model_name_index, epoch_index)
-    logger.info('Load Init model from {}'.format(load_path))
-    model.load_state_dict(torch.load(load_path, map_location='cpu'))
+    # load_dir = 'ckpt/{}'.format(exp_id_index)
+    # load_path = '{}/{}_{}_{}.pt'.format(load_dir, exp_id_index, model_name_index, epoch_index)
+    # logger.info('Load Init model from {}'.format(load_path))
+    # model.load_state_dict(torch.load(load_path, map_location='cpu'))
 
+    load_dir = 'ckpt/{}'.format(exp_id_index)
+    try:
+        load_path = '{}/{}_{}_{}.pt'.format(load_dir, exp_id_index, model_name_index, epoch_index)
+        logger.info('Load Init model from {}'.format(load_path))
+        model.load_state_dict(torch.load(load_path, map_location='cpu'))
+        # print(model.device)
+    except:
+        load_path = '{}/{}_{}.pt'.format(load_dir, exp_id_index, model_name_index)
+        logger.info('Load Init model from {}'.format(load_path))
+        model.load_state_dict(torch.load(load_path, map_location='cpu'))
+    
     # 开始评估
     test_scores = []
     test_res = []
@@ -417,16 +525,25 @@ for batch_prev_items, batch_locale, batch_candidate_set, batch_len, batch_mask, 
     test_res.append(sorted_candidate_set.detach().cpu().numpy())
 test_res = np.concatenate(test_res, axis=0)  # (N, 10)
 
+# logger.info('Decoding the results...')
+# test_res_unencoded = []
+# for x in tqdm(test_res, total=len(test_res)):
+#     x_unencoded = [id2product[id_] for id_ in x]
+#     if len(x_unencoded) < 100:
+#         for i in top200:
+#             if i not in x_unencoded:  # and i not in prev_items(需要单独load)
+#                 x_unencoded.append(i)
+#             if len(x_unencoded) >= 100:
+#                     break
+#     test_res_unencoded.append(x_unencoded)
+
 logger.info('Decoding the results...')
+assert len(test_res) == len(test_preds_encoded)
 test_res_unencoded = []
-for x in tqdm(test_res, total=len(test_res)):
+for ind, x in tqdm(enumerate(test_res), total=len(test_res)):
+    x = list(x) + test_preds_encoded[ind][len_candidate_set:]
+    assert len(x) == 100
     x_unencoded = [id2product[id_] for id_ in x]
-    if len(x_unencoded) < 100:
-        for i in top200:
-            if i not in x_unencoded:  # and i not in prev_items(需要单独load)
-                x_unencoded.append(i)
-            if len(x_unencoded) >= 100:
-                    break
     test_res_unencoded.append(x_unencoded)
 
 logger.info('Saving...')
